@@ -2,6 +2,7 @@ use {
   self::{
     deserialize_from_str::DeserializeFromStr,
     error::{OptionExt, ServerError, ServerResult},
+    etag::EtagLayer,
   },
   super::*,
   crate::templates::{
@@ -19,6 +20,7 @@ use {
     Router, TypedHeader,
   },
   axum_server::Handle,
+  http::Request,
   rust_embed::RustEmbed,
   rustls_acme::{
     acme::{LETS_ENCRYPT_PRODUCTION_DIRECTORY, LETS_ENCRYPT_STAGING_DIRECTORY},
@@ -26,8 +28,9 @@ use {
     caches::DirCache,
     AcmeConfig,
   },
-  std::{cmp::Ordering, str},
+  std::{cmp::Ordering, marker::PhantomData, str, task::Poll},
   tokio_stream::StreamExt,
+  tower::{Layer, Service},
   tower_http::{
     cors::{Any, CorsLayer},
     set_header::SetResponseHeaderLayer,
@@ -35,6 +38,7 @@ use {
 };
 
 mod error;
+mod etag;
 
 enum BlockQuery {
   Height(u64),
@@ -172,7 +176,8 @@ impl Server {
           CorsLayer::new()
             .allow_methods([http::Method::GET])
             .allow_origin(Any),
-        );
+        )
+        .layer(EtagLayer::new());
 
       match (self.http_port(), self.https_port()) {
         (Some(http_port), None) => {
