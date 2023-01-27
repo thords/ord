@@ -12,7 +12,10 @@ use {
   chrono::SubsecRound,
   indicatif::{ProgressBar, ProgressStyle},
   log::log_enabled,
-  redb::{Database, ReadableTable, Table, TableDefinition, WriteStrategy, WriteTransaction},
+  redb::{
+    Database, MultimapTable, MultimapTableDefinition, ReadableMultimapTable, ReadableTable, Table,
+    TableDefinition, WriteStrategy, WriteTransaction,
+  },
   std::collections::HashMap,
   std::sync::atomic::{self, AtomicBool},
 };
@@ -29,6 +32,13 @@ macro_rules! define_table {
   };
 }
 
+macro_rules! define_multimap_table {
+  ($name:ident, $key:ty, $value:ty) => {
+    const $name: MultimapTableDefinition<$key, $value> =
+      MultimapTableDefinition::new(stringify!($name));
+  };
+}
+
 define_table! { HEIGHT_TO_BLOCK_HASH, u64, &BlockHashValue }
 define_table! { INSCRIPTION_ID_TO_INSCRIPTION_ENTRY, &InscriptionIdValue, InscriptionEntryValue }
 define_table! { INSCRIPTION_ID_TO_SATPOINT, &InscriptionIdValue, &SatPointValue }
@@ -36,10 +46,11 @@ define_table! { INSCRIPTION_NUMBER_TO_INSCRIPTION_ID, u64, &InscriptionIdValue }
 define_table! { OUTPOINT_TO_SAT_RANGES, &OutPointValue, &[u8] }
 define_table! { OUTPOINT_TO_VALUE, &OutPointValue, u64}
 define_table! { SATPOINT_TO_INSCRIPTION_ID, &SatPointValue, &InscriptionIdValue }
-define_table! { SAT_TO_INSCRIPTION_ID, u64, &InscriptionIdValue }
 define_table! { SAT_TO_SATPOINT, u64, &SatPointValue }
 define_table! { STATISTIC_TO_COUNT, u64, u64 }
 define_table! { WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP, u64, u128 }
+
+define_multimap_table! { SAT_TO_INSCRIPTION_ID, u64, &InscriptionIdValue }
 
 pub(crate) struct Index {
   auth: Auth,
@@ -200,13 +211,13 @@ impl Index {
           tx
         };
 
+        tx.open_multimap_table(SAT_TO_INSCRIPTION_ID)?;
         tx.open_table(HEIGHT_TO_BLOCK_HASH)?;
         tx.open_table(INSCRIPTION_ID_TO_INSCRIPTION_ENTRY)?;
         tx.open_table(INSCRIPTION_ID_TO_SATPOINT)?;
         tx.open_table(INSCRIPTION_NUMBER_TO_INSCRIPTION_ID)?;
         tx.open_table(OUTPOINT_TO_VALUE)?;
         tx.open_table(SATPOINT_TO_INSCRIPTION_ID)?;
-        tx.open_table(SAT_TO_INSCRIPTION_ID)?;
         tx.open_table(SAT_TO_SATPOINT)?;
         tx.open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?;
 
@@ -441,8 +452,9 @@ impl Index {
       self
         .database
         .begin_read()?
-        .open_table(SAT_TO_INSCRIPTION_ID)?
+        .open_multimap_table(SAT_TO_INSCRIPTION_ID)?
         .get(&sat.n())?
+        .next()
         .map(|inscription_id| Entry::load(*inscription_id.value())),
     )
   }
@@ -792,10 +804,11 @@ impl Index {
       assert_eq!(
         InscriptionId::load(
           *rtx
-            .open_table(SAT_TO_INSCRIPTION_ID)
+            .open_multimap_table(SAT_TO_INSCRIPTION_ID)
             .unwrap()
             .get(&sat)
             .unwrap()
+            .next()
             .unwrap()
             .value()
         ),
