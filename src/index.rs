@@ -26,12 +26,6 @@ mod updater;
 
 const SCHEMA_VERSION: u64 = 2;
 
-macro_rules! define_table {
-  ($name:ident, $key:ty, $value:ty) => {
-    const $name: TableDefinition<$key, $value> = TableDefinition::new(stringify!($name));
-  };
-}
-
 macro_rules! define_multimap_table {
   ($name:ident, $key:ty, $value:ty) => {
     const $name: MultimapTableDefinition<$key, $value> =
@@ -39,18 +33,23 @@ macro_rules! define_multimap_table {
   };
 }
 
+macro_rules! define_table {
+  ($name:ident, $key:ty, $value:ty) => {
+    const $name: TableDefinition<$key, $value> = TableDefinition::new(stringify!($name));
+  };
+}
+
+define_multimap_table! { SATPOINT_TO_INSCRIPTION_ID, &SatPointValue, &InscriptionIdValue }
+define_multimap_table! { SAT_TO_INSCRIPTION_ID, u64, &InscriptionIdValue }
 define_table! { HEIGHT_TO_BLOCK_HASH, u64, &BlockHashValue }
 define_table! { INSCRIPTION_ID_TO_INSCRIPTION_ENTRY, &InscriptionIdValue, InscriptionEntryValue }
 define_table! { INSCRIPTION_ID_TO_SATPOINT, &InscriptionIdValue, &SatPointValue }
 define_table! { INSCRIPTION_NUMBER_TO_INSCRIPTION_ID, u64, &InscriptionIdValue }
 define_table! { OUTPOINT_TO_SAT_RANGES, &OutPointValue, &[u8] }
 define_table! { OUTPOINT_TO_VALUE, &OutPointValue, u64}
-define_table! { SATPOINT_TO_INSCRIPTION_ID, &SatPointValue, &InscriptionIdValue }
 define_table! { SAT_TO_SATPOINT, u64, &SatPointValue }
 define_table! { STATISTIC_TO_COUNT, u64, u64 }
 define_table! { WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP, u64, u128 }
-
-define_multimap_table! { SAT_TO_INSCRIPTION_ID, u64, &InscriptionIdValue }
 
 pub(crate) struct Index {
   auth: Auth,
@@ -212,12 +211,12 @@ impl Index {
         };
 
         tx.open_multimap_table(SAT_TO_INSCRIPTION_ID)?;
+        tx.open_multimap_table(SATPOINT_TO_INSCRIPTION_ID)?;
         tx.open_table(HEIGHT_TO_BLOCK_HASH)?;
         tx.open_table(INSCRIPTION_ID_TO_INSCRIPTION_ENTRY)?;
         tx.open_table(INSCRIPTION_ID_TO_SATPOINT)?;
         tx.open_table(INSCRIPTION_NUMBER_TO_INSCRIPTION_ID)?;
         tx.open_table(OUTPOINT_TO_VALUE)?;
-        tx.open_table(SATPOINT_TO_INSCRIPTION_ID)?;
         tx.open_table(SAT_TO_SATPOINT)?;
         tx.open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?;
 
@@ -517,7 +516,7 @@ impl Index {
         &self
           .database
           .begin_read()?
-          .open_table(SATPOINT_TO_INSCRIPTION_ID)?,
+          .open_multimap_table(SATPOINT_TO_INSCRIPTION_ID)?,
         outpoint,
       )?
       .map(|(_satpoint, inscription_id)| inscription_id)
@@ -664,8 +663,9 @@ impl Index {
       self
         .database
         .begin_read()?
-        .open_table(SATPOINT_TO_INSCRIPTION_ID)?
-        .range([0; 44]..)?
+        .open_multimap_table(SATPOINT_TO_INSCRIPTION_ID)?
+        .range(&[0; 44]..)?
+        .next()
         .map(|(satpoint, id)| (Entry::load(*satpoint.value()), Entry::load(*id.value())))
         .take(n.unwrap_or(usize::MAX))
         .collect(),
@@ -831,7 +831,7 @@ impl Index {
   }
 
   fn inscriptions_on_output<'a: 'tx, 'tx>(
-    satpoint_to_id: &'a impl ReadableTable<&'tx SatPointValue, &'tx InscriptionIdValue>,
+    satpoint_to_id: &'a impl ReadableMultimapTable<&'tx SatPointValue, &'tx InscriptionIdValue>,
     outpoint: OutPoint,
   ) -> Result<impl Iterator<Item = (SatPoint, InscriptionId)> + 'tx> {
     let start = SatPoint {
