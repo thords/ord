@@ -16,6 +16,8 @@ pub(crate) struct Options {
     help = "Use <CHAIN>."
   )]
   pub(crate) chain_argument: Chain,
+  #[clap(long, help = "Load config from <CONFIG_DIR>.")]
+  pub(crate) config_dir: Option<PathBuf>,
   #[clap(long, help = "Load Bitcoin Core RPC cookie file from <COOKIE_FILE>.")]
   pub(crate) cookie_file: Option<PathBuf>,
   #[clap(long, help = "Store index in <DATA_DIR>.")]
@@ -111,11 +113,19 @@ impl Options {
     Ok(self.chain().join_with_data_dir(&base))
   }
 
+  pub(crate) fn config_dir(&self) -> Result<PathBuf> {
+    let base = match &self.config_dir {
+      Some(base) => base.clone(),
+      None => dirs::config_dir()
+        .ok_or_else(|| anyhow!("failed to retrieve config dir"))?
+        .join("ord"),
+    };
+
+    Ok(self.chain().join_with_data_dir(&base))
+  }
+
   pub(crate) fn load_config(&self) -> Result<Config> {
-    let path = dirs::config_dir()
-      .ok_or_else(|| anyhow!("failed to retrieve config dir"))?
-      .join("ord")
-      .join("config.yaml");
+    let path = self.config_dir()?.join("ord.yaml");
 
     if !path.is_file() {
       Ok(Default::default())

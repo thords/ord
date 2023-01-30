@@ -927,8 +927,22 @@ mod tests {
     }
 
     fn new_with_args(ord_args: &[&str], server_args: &[&str]) -> Self {
-      let bitcoin_rpc_server = test_bitcoincore_rpc::spawn();
+      Self::new_server(test_bitcoincore_rpc::spawn(), None, ord_args, server_args)
+    }
 
+    fn new_with_bitcoin_rpc_server_and_config(
+      bitcoin_rpc_server: test_bitcoincore_rpc::Handle,
+      config: String,
+    ) -> Self {
+      Self::new_server(bitcoin_rpc_server, Some(config), &[], &[])
+    }
+
+    fn new_server(
+      bitcoin_rpc_server: test_bitcoincore_rpc::Handle,
+      config: Option<String>,
+      ord_args: &[&str],
+      server_args: &[&str],
+    ) -> Self {
       let tempdir = TempDir::new().unwrap();
 
       let cookiefile = tempdir.path().join("cookie");
@@ -943,10 +957,17 @@ mod tests {
 
       let url = Url::parse(&format!("http://127.0.0.1:{port}")).unwrap();
 
+      if let Some(config) = config {
+        let config_dir = tempdir.path().join("regtest");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(config_dir.join("ord.yaml"), config).unwrap();
+      }
+
       let (options, server) = parse_server_args(&format!(
-        "ord --chain regtest --rpc-url {} --cookie-file {} --data-dir {} {} server --http-port {} --address 127.0.0.1 {}",
+        "ord --chain regtest --rpc-url {} --cookie-file {} --data-dir {} --config-dir {} {} server --http-port {} --address 127.0.0.1 {}",
         bitcoin_rpc_server.url(),
         cookiefile.to_str().unwrap(),
+        tempdir.path().to_str().unwrap(),
         tempdir.path().to_str().unwrap(),
         ord_args.join(" "),
         port,
@@ -2415,28 +2436,25 @@ mod tests {
 
   #[test]
   fn inscriptions_can_be_hidden_with_config() {
-    let server = TestServer::new();
-    server.mine_blocks(1);
-
-    let txid = server.bitcoin_rpc_server.broadcast_tx(TransactionTemplate {
+    let bitcoin_rpc_server = test_bitcoincore_rpc::spawn();
+    bitcoin_rpc_server.mine_blocks(1);
+    let txid = bitcoin_rpc_server.broadcast_tx(TransactionTemplate {
       inputs: &[(1, 0, 0)],
       witness: inscription("text/plain;charset=utf-8", "hello").to_witness(),
       ..Default::default()
     });
-    server.mine_blocks(1);
-
     let inscription = InscriptionId::from(txid);
+    bitcoin_rpc_server.mine_blocks(1);
+
+    let server = TestServer::new_with_bitcoin_rpc_server_and_config(
+      bitcoin_rpc_server,
+      format!("\"hidden\":\n - {inscription}"),
+    );
 
     server.assert_response(
       format!("/preview/{inscription}"),
       StatusCode::OK,
       &fs::read_to_string("templates/preview-unknown.html").unwrap(),
     );
-
-    // let rpc_server = test_bitcoincore_rpc::builder()
-    //   .config(format!("\"hidden\":\n - {inscription}"))
-    //   .build();
-
-    // rpc
   }
 }
