@@ -2456,5 +2456,11 @@ mod tests {
       StatusCode::OK,
       &fs::read_to_string("templates/preview-unknown.html").unwrap(),
     );
+
+    server.assert_response(
+      format!("/content/{inscription}"),
+      StatusCode::OK,
+      &fs::read_to_string("templates/preview-unknown.html").unwrap(),
+    );
   }
 }
