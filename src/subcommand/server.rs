@@ -2412,4 +2412,31 @@ mod tests {
       "br"
     );
   }
+
+  #[test]
+  fn inscriptions_can_be_hidden_with_config() {
+    let server = TestServer::new();
+    server.mine_blocks(1);
+
+    let txid = server.bitcoin_rpc_server.broadcast_tx(TransactionTemplate {
+      inputs: &[(1, 0, 0)],
+      witness: inscription("text/plain;charset=utf-8", "hello").to_witness(),
+      ..Default::default()
+    });
+    server.mine_blocks(1);
+
+    let inscription = InscriptionId::from(txid);
+
+    server.assert_response(
+      format!("/preview/{inscription}"),
+      StatusCode::OK,
+      &fs::read_to_string("templates/preview-unknown.html").unwrap(),
+    );
+
+    // let rpc_server = test_bitcoincore_rpc::builder()
+    //   .config(format!("\"hidden\":\n - {inscription}"))
+    //   .build();
+
+    // rpc
+  }
 }
