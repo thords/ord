@@ -15,8 +15,10 @@
         background-repeat: no-repeat;
         background-size: contain;
         height: 100%;
-        image-rendering: pixelated;
         margin: 0;
+%% if self.pixelated {
+        image-rendering: pixelated;
+%% }
       }
 
       img {
