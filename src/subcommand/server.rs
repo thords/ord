@@ -146,6 +146,11 @@ impl Server {
 
       let router = Router::new()
         .route("/", get(Self::home))
+        .route(
+          "/inscription_trans/:start/:end",
+          get(Self::inscription_trans),
+        )
+        .route("/height/:height", get(Self::get_height_index))
         .route("/block-count", get(Self::block_count))
         .route("/block/:query", get(Self::block))
         .route("/blockcount", get(Self::block_count))
@@ -448,9 +453,9 @@ impl Server {
         .ok_or_not_found(|| format!("output {outpoint}"))?
     };
     if accept_json.0 {
-      let address = match page_config.chain.address_from_script( &output.script_pubkey) {
-        Ok(v) => Some(v) ,
-        Err(_e) => None
+      let address = match page_config.chain.address_from_script(&output.script_pubkey) {
+        Ok(v) => Some(v),
+        Err(_e) => None,
       };
       Ok(
         axum::Json(serde_json::json!({
@@ -494,7 +499,7 @@ impl Server {
   async fn number(
     // Extension(page_config): Extension<Arc<PageConfig>>,
     Extension(index): Extension<Arc<Index>>,
-    Path(DeserializeFromStr(number)): Path<DeserializeFromStr<u64>>,
+    Path(DeserializeFromStr(number)): Path<DeserializeFromStr<i64>>,
   ) -> ServerResult<Response> {
     let inscription_id = index.get_inscription_id_by_inscription_number(number)?;
 
@@ -552,14 +557,14 @@ impl Server {
     )>,
   ) -> ServerResult<Response> {
     let trans = index.get_inscription_trans(start, end)?;
-    
+
     // let eventlogs = trans.1;
 
     // let histories = eventlogs.iter().map( | record | {
     //   let satpoint1 = record.2 ;
     //   let satpoint2 = record.3 ;
     // });
-    
+
     Ok(
       axum::Json(serde_json::json!({
         "count": trans.0,
@@ -752,7 +757,7 @@ impl Server {
         .into_response(),
     )
   }
-  
+
   async fn static_asset(Path(path): Path<String>) -> ServerResult<Response> {
     let content = StaticAssets::get(if let Some(stripped) = path.strip_prefix('/') {
       stripped
@@ -1057,7 +1062,7 @@ impl Server {
       .output
       .into_iter()
       .nth(satpoint.outpoint.vout.try_into().unwrap())
-      .ok_or_not_found(|| format!("inscription {inscription_id} current transaction output"));
+      .ok_or_not_found(|| format!("inscription {inscription_id} current transaction output"))?;
 
     let previous = if let Some(previous) = entry.number.checked_sub(1) {
       Some(
@@ -1082,7 +1087,7 @@ impl Server {
         inscription_id,
         next,
         number: entry.number,
-        output,
+        output: Some(output),
         previous,
         sat: entry.sat,
         satpoint,
