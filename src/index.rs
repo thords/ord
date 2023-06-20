@@ -791,7 +791,7 @@ impl Index {
     &self,
     start: u64,
     end: u64,
-  ) -> Result<(u64, Vec<(u64, InscriptionId, SatPoint, SatPoint, u64, u32, Option<String>, Option<String> )>)> {
+  ) -> Result<(u64, Vec<(u64, InscriptionId, i64, SatPoint, SatPoint, u64, u32, Option<String>, Option<String> )>)> {
     let rtx = self.database.begin_read()?;
     let table = rtx.open_table(INSCRIPTION_TRANS)?;
 
@@ -816,7 +816,14 @@ impl Index {
         
         let ( content_type, content_body ) = self.get_inscription_type_body( inscription_id ).unwrap_or((None,None));
         
-        (_key.value(),Entry::load(*v.0), Entry::load(*v.1), Entry::load(*v.2), v.3, v.4, content_type, content_body )
+        let inscription_entity = self.get_inscription_entry(inscription_id).unwrap_or( None );
+
+        let inscription_number = match inscription_entity {
+          Some(v) => v.number,
+          None => -1
+        };
+
+        (_key.value(),Entry::load(*v.0), inscription_number, Entry::load(*v.1), Entry::load(*v.2), v.3, v.4, content_type, content_body )
         
       })
       .collect();
