@@ -2,7 +2,7 @@ use {
   self::{
     entry::{
       BlockHashValue, Entry, InscriptionEntry, InscriptionEntryValue, InscriptionIdValue,
-      OutPointValue, SatPointValue, SatRange
+      OutPointValue, SatPointValue, SatRange,
     },
     updater::Updater,
   },
@@ -756,34 +756,37 @@ impl Index {
     &self,
     inscription_id: InscriptionId,
   ) -> Result<(Option<String>, Option<String>)> {
-      let entry = self.get_inscription_by_id(inscription_id).unwrap();
-      match entry {
-          Some(inscription) => {
-              let content_type = match inscription.content_type() {
-                Some( v ) =>  v , 
-                None => ""
-              };
+    let entry = self.get_inscription_by_id(inscription_id).unwrap();
+    match entry {
+      Some(inscription) => {
+        let content_type = match inscription.content_type() {
+          Some(v) => v,
+          None => "",
+        };
 
-              // let content_type = inscription.content_type().unwrap_or("");
-              let content_body = if content_type == "text/plain;charset=utf-8" || content_type == "application/json" {
-                  let body = match inscription.body() {
-                    Some(v) => v , 
-                    None => &[]
-                  };
-                  // let body = inscription.body().unwrap();
-                  if body.len() > 4096 {
-                    None
-                  } else {
-                    Some(String::from_utf8(body.to_vec())?)
-                  }
-              } else{
-                None
-              };
-              let c_type = Some(String::from(content_type)) ;
-              Ok(( c_type, content_body))
+        // let content_type = inscription.content_type().unwrap_or("");
+        let content_body = if content_type == "text/plain;charset=utf-8"
+          || content_type == "application/json"
+          || content_type == "text/plain"
+        {
+          let body = match inscription.body() {
+            Some(v) => v,
+            None => &[],
+          };
+          // let body = inscription.body().unwrap();
+          if body.len() > 4096 {
+            None
+          } else {
+            Some(String::from_utf8(body.to_vec())?)
           }
-          None => Ok((None, None)),
+        } else {
+          None
+        };
+        let c_type = Some(String::from(content_type));
+        Ok((c_type, content_body))
       }
+      None => Ok((None, None)),
+    }
   }
 
   //query inscription_trans
@@ -791,7 +794,20 @@ impl Index {
     &self,
     start: u64,
     end: u64,
-  ) -> Result<(u64, Vec<(u64, InscriptionId, i64, SatPoint, SatPoint, u64, u32, Option<String>, Option<String> )>)> {
+  ) -> Result<(
+    u64,
+    Vec<(
+      u64,
+      InscriptionId,
+      i64,
+      SatPoint,
+      SatPoint,
+      u64,
+      u32,
+      Option<String>,
+      Option<String>,
+    )>,
+  )> {
     let rtx = self.database.begin_read()?;
     let table = rtx.open_table(INSCRIPTION_TRANS)?;
 
@@ -803,9 +819,9 @@ impl Index {
       .unwrap_or(0)
       + 1;
 
-    let mut _end = end ;
+    let mut _end = end;
     if end > total {
-      _end = total ;
+      _end = total;
     }
 
     let history = table
@@ -813,21 +829,32 @@ impl Index {
       .map(|(_key, id)| {
         let v = id.value();
         let inscription_id = Entry::load(*v.0);
-        
-        let ( content_type, content_body ) = self.get_inscription_type_body( inscription_id ).unwrap_or((None,None));
-        
-        let inscription_entity = self.get_inscription_entry(inscription_id).unwrap_or( None );
+
+        let (content_type, content_body) = self
+          .get_inscription_type_body(inscription_id)
+          .unwrap_or((None, None));
+
+        let inscription_entity = self.get_inscription_entry(inscription_id).unwrap_or(None);
 
         let inscription_number = match inscription_entity {
           Some(v) => v.number,
-          None => -1
+          None => -1,
         };
 
-        (_key.value(),Entry::load(*v.0), inscription_number, Entry::load(*v.1), Entry::load(*v.2), v.3, v.4, content_type, content_body )
-        
+        (
+          _key.value(),
+          Entry::load(*v.0),
+          inscription_number,
+          Entry::load(*v.1),
+          Entry::load(*v.2),
+          v.3,
+          v.4,
+          content_type,
+          content_body,
+        )
       })
       .collect();
-    
+
     Ok((total, history))
   }
 
