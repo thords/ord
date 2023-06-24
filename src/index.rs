@@ -2477,8 +2477,8 @@ mod tests {
       );
     }
   }
-}
-#[test]
+
+  #[test]
   // https://github.com/ordinals/ord/issues/2062
   fn zero_value_transaction_inscription_not_cursed_but_unbound() {
     for context in Context::configurations() {
