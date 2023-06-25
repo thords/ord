@@ -55,7 +55,7 @@ define_table! { SAT_TO_SATPOINT, u64, &SatPointValue }
 define_table! { STATISTIC_TO_COUNT, u64, u64 }
 define_table! { WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP, u64, u128 }
 // added
-define_table! { INSCRIPTION_TRANS, u64, (&InscriptionIdValue, &SatPointValue,&SatPointValue, u64, u32) } //block,timestamp
+define_table! { INSCRIPTION_TRANS, u64, (&InscriptionIdValue, &SatPointValue,&SatPointValue, u64, u32, u8 ) } //block,timestamp
 
 define_table! { HEIGHT_TO_TRANS_INDEX, u64, u64 }
 
@@ -834,6 +834,7 @@ impl Index {
       SatPoint,
       u64,
       u32,
+      u8,
       Option<String>,
       Option<String>,
     )>,
@@ -879,6 +880,7 @@ impl Index {
           Entry::load(*v.2),
           v.3,
           v.4,
+          v.5,
           content_type,
           content_body,
         )
