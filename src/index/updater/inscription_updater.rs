@@ -48,6 +48,7 @@ pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
       &'static SatPointValue,
       u64,
       u32,
+      u8,
     ),
   >,
   history_len: &'a mut u64,
@@ -83,6 +84,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         &'static SatPointValue,
         u64,
         u32,
+        u8,
       ),
     >,
     history_len: &'a mut u64,
@@ -338,6 +340,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           input_sat_ranges,
           inscriptions.next().unwrap(),
           new_satpoint,
+          is_coinbase
         )?;
       }
 
@@ -362,7 +365,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           },
           offset: self.lost_sats + flotsam.offset - output_value,
         };
-        self.update_inscription_location(input_sat_ranges, flotsam, new_satpoint)?;
+        self.update_inscription_location(input_sat_ranges, flotsam, new_satpoint, is_coinbase )?;
       }
       self.lost_sats += self.reward - output_value;
       Ok(())
@@ -401,6 +404,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     input_sat_ranges: Option<&VecDeque<(u64, u64)>>,
     flotsam: Flotsam,
     new_satpoint: SatPoint,
+    is_coinbase: bool,
   ) -> Result {
     let inscription_id = flotsam.inscription_id.store();
 
@@ -485,6 +489,12 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     self.satpoint_to_id.insert(&satpoint, &inscription_id)?;
     self.id_to_satpoint.insert(&inscription_id, &satpoint)?;
 
+    let is_coinbase_value = if is_coinbase {
+      1u8
+    } else {
+      0u8
+    };
+
     //add inscription_trans
     self.inscription_trans.insert(
       self.history_len.clone(),
@@ -494,6 +504,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         &new_satpoint.store(),
         self.height,
         self.timestamp,
+        is_coinbase_value
       )
     )?;
     *(self.history_len) += 1;
