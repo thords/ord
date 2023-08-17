@@ -91,15 +91,16 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
   ) -> Result<Self> {
     let next_cursed_number = number_to_id
       .iter()?
-      .map(|(number, _id)| number.value() - 1)
       .next()
+      .and_then(|result| result.ok())
+      .map(|(number, _id)| number.value() - 1)
       .unwrap_or(-1);
 
     let next_number = number_to_id
       .iter()?
-      .rev()
+      .next_back()
+      .and_then(|result| result.ok())
       .map(|(number, _id)| number.value() + 1)
-      .next()
       .unwrap_or(0);
 
     Ok(Self {
@@ -198,13 +199,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         } else if inscription.tx_in_offset != 0 {
           Some(Curse::NotAtOffsetZero)
         } else if inscribed_offsets.contains_key(&offset) {
-          let seq_num = self
-            .reinscription_id_to_seq_num
-            .iter()?
-            .rev()
-            .next()
-            .map(|(_id, number)| number.value() + 1)
-            .unwrap_or(0);
+          let seq_num = self.reinscription_id_to_seq_num.len()?;
 
           let sat = Self::calculate_sat(input_sat_ranges, offset);
           log::info!("processing reinscription {inscription_id} on sat {:?}: sequence number {seq_num}, inscribed offsets {:?}", sat, inscribed_offsets);

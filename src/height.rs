@@ -1,7 +1,6 @@
 use super::*;
 
-#[derive(Copy, Clone, Debug, Display, FromStr, Ord, Eq, PartialEq, PartialOrd, Serialize)]
-#[serde(transparent)]
+#[derive(Copy, Clone, Debug, Display, FromStr, Ord, Eq, Serialize, PartialEq, PartialOrd)]
 pub(crate) struct Height(pub(crate) u64);
 
 impl Height {
