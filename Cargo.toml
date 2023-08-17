@@ -1,6 +1,6 @@
 [package]
 name = "ord"
-description = "◉ Ordinal wallet and block explorer"
+description = "◉ Ordinal wallet and block explorer, fork."
 version = "0.8.1"
 license = "CC0-1.0"
 edition = "2021"
