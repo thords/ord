@@ -3287,7 +3287,7 @@ mod tests {
         ],
         context
           .index
-          .get_inscriptions_on_output_ordered(OutPoint { txid, vout: 0 })
+          .get_inscriptions_on_output_with_satpoints(OutPoint { txid, vout: 0 })
           .unwrap()
           .iter()
           .map(|(_satpoint, inscription_id)| *inscription_id)
@@ -3339,9 +3339,250 @@ mod tests {
         vec![(location, first), (location, second), (location, third)],
         context
           .index
-          .get_inscriptions_on_output_ordered(OutPoint { txid, vout: 0 })
+          .get_inscriptions_on_output_with_satpoints(OutPoint { txid, vout: 0 })
           .unwrap()
       )
+    }
+  }
+
+  #[test]
+  fn reinscriptions_sequence_numbers_are_tracked_correctly() {
+    for context in Context::configurations() {
+      context.mine_blocks(1);
+
+      let mut inscription_ids = vec![];
+      for i in 1..=5 {
+        let txid = context.rpc_server.broadcast_tx(TransactionTemplate {
+          inputs: &[(i, if i == 1 { 0 } else { 1 }, 0)], // for the first inscription use coinbase, otherwise use the previous tx
+          witness: inscription("text/plain;charset=utf-8", &format!("hello {}", i)).to_witness(),
+          ..Default::default()
+        });
+
+        inscription_ids.push(InscriptionId { txid, index: 0 });
+
+        context.mine_blocks(1);
+      }
+
+      let rtx = context.index.database.begin_read().unwrap();
+      let re_id_to_seq_num = rtx.open_table(REINSCRIPTION_ID_TO_SEQUENCE_NUMBER).unwrap();
+
+      for (index, id) in inscription_ids.iter().enumerate() {
+        match re_id_to_seq_num.get(&id.store()) {
+          Ok(Some(num)) => {
+            let sequence_number = num.value() + 1; // remove at next index refactor
+            assert_eq!(
+              index as u64, sequence_number,
+              "sequence number mismatch for {:?}",
+              id
+            );
+          }
+          Ok(None) => assert_eq!(
+            index, 0,
+            "only first inscription should not have sequence number for {:?}",
+            id
+          ),
+          Err(error) => panic!("Error retrieving sequence number: {}", error),
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn reinscriptions_are_ordered_correctly_for_many_outpoints() {
+    for context in Context::configurations() {
+      context.mine_blocks(1);
+
+      let mut inscription_ids = vec![];
+      for i in 1..=21 {
+        let txid = context.rpc_server.broadcast_tx(TransactionTemplate {
+          inputs: &[(i, if i == 1 { 0 } else { 1 }, 0)], // for the first inscription use coinbase, otherwise use the previous tx
+          witness: inscription("text/plain;charset=utf-8", &format!("hello {}", i)).to_witness(),
+          ..Default::default()
+        });
+
+        inscription_ids.push(InscriptionId { txid, index: 0 });
+
+        context.mine_blocks(1);
+      }
+
+      let final_txid = inscription_ids.last().unwrap().txid;
+      let location = SatPoint {
+        outpoint: OutPoint {
+          txid: final_txid,
+          vout: 0,
+        },
+        offset: 0,
+      };
+
+      let expected_result = inscription_ids
+        .iter()
+        .map(|id| (location, *id))
+        .collect::<Vec<(SatPoint, InscriptionId)>>();
+
+      assert_eq!(
+        expected_result,
+        context
+          .index
+          .get_inscriptions_on_output_with_satpoints(OutPoint {
+            txid: final_txid,
+            vout: 0
+          })
+          .unwrap()
+      )
+    }
+  }
+
+  #[test]
+  fn recover_from_reorg() {
+    for context in Context::configurations() {
+      context.mine_blocks(1);
+
+      let txid = context.rpc_server.broadcast_tx(TransactionTemplate {
+        inputs: &[(1, 0, 0)],
+        witness: inscription("text/plain;charset=utf-8", "hello").to_witness(),
+        ..Default::default()
+      });
+      let first_id = InscriptionId { txid, index: 0 };
+      let first_location = SatPoint {
+        outpoint: OutPoint { txid, vout: 0 },
+        offset: 0,
+      };
+
+      context.mine_blocks(6);
+
+      context
+        .index
+        .assert_inscription_location(first_id, first_location, Some(50 * COIN_VALUE));
+
+      let txid = context.rpc_server.broadcast_tx(TransactionTemplate {
+        inputs: &[(2, 0, 0)],
+        witness: inscription("text/plain;charset=utf-8", "hello").to_witness(),
+        ..Default::default()
+      });
+      let second_id = InscriptionId { txid, index: 0 };
+      let second_location = SatPoint {
+        outpoint: OutPoint { txid, vout: 0 },
+        offset: 0,
+      };
+
+      context.mine_blocks(1);
+
+      context
+        .index
+        .assert_inscription_location(second_id, second_location, Some(100 * COIN_VALUE));
+
+      context.rpc_server.invalidate_tip();
+      context.mine_blocks(2);
+
+      context
+        .index
+        .assert_inscription_location(first_id, first_location, Some(50 * COIN_VALUE));
+
+      context.index.assert_non_existence_of_inscription(second_id);
+    }
+  }
+
+  #[test]
+  fn recover_from_3_block_deep_and_consecutive_reorg() {
+    for context in Context::configurations() {
+      context.mine_blocks(1);
+
+      let txid = context.rpc_server.broadcast_tx(TransactionTemplate {
+        inputs: &[(1, 0, 0)],
+        witness: inscription("text/plain;charset=utf-8", "hello").to_witness(),
+        ..Default::default()
+      });
+      let first_id = InscriptionId { txid, index: 0 };
+      let first_location = SatPoint {
+        outpoint: OutPoint { txid, vout: 0 },
+        offset: 0,
+      };
+
+      context.mine_blocks(10);
+
+      let txid = context.rpc_server.broadcast_tx(TransactionTemplate {
+        inputs: &[(2, 0, 0)],
+        witness: inscription("text/plain;charset=utf-8", "hello").to_witness(),
+        ..Default::default()
+      });
+      let second_id = InscriptionId { txid, index: 0 };
+      let second_location = SatPoint {
+        outpoint: OutPoint { txid, vout: 0 },
+        offset: 0,
+      };
+
+      context.mine_blocks(1);
+
+      context
+        .index
+        .assert_inscription_location(second_id, second_location, Some(100 * COIN_VALUE));
+
+      context.rpc_server.invalidate_tip();
+      context.rpc_server.invalidate_tip();
+      context.rpc_server.invalidate_tip();
+
+      context.mine_blocks(4);
+
+      context.index.assert_non_existence_of_inscription(second_id);
+
+      context.rpc_server.invalidate_tip();
+
+      context.mine_blocks(2);
+
+      context
+        .index
+        .assert_inscription_location(first_id, first_location, Some(50 * COIN_VALUE));
+    }
+  }
+
+  #[test]
+  fn recover_from_very_unlikely_7_block_deep_reorg() {
+    for context in Context::configurations() {
+      context.mine_blocks(1);
+
+      let txid = context.rpc_server.broadcast_tx(TransactionTemplate {
+        inputs: &[(1, 0, 0)],
+        witness: inscription("text/plain;charset=utf-8", "hello").to_witness(),
+        ..Default::default()
+      });
+
+      context.mine_blocks(11);
+
+      let first_id = InscriptionId { txid, index: 0 };
+      let first_location = SatPoint {
+        outpoint: OutPoint { txid, vout: 0 },
+        offset: 0,
+      };
+
+      let txid = context.rpc_server.broadcast_tx(TransactionTemplate {
+        inputs: &[(2, 0, 0)],
+        witness: inscription("text/plain;charset=utf-8", "hello").to_witness(),
+        ..Default::default()
+      });
+
+      let second_id = InscriptionId { txid, index: 0 };
+      let second_location = SatPoint {
+        outpoint: OutPoint { txid, vout: 0 },
+        offset: 0,
+      };
+
+      context.mine_blocks(7);
+
+      context
+        .index
+        .assert_inscription_location(second_id, second_location, Some(100 * COIN_VALUE));
+
+      for _ in 0..7 {
+        context.rpc_server.invalidate_tip();
+      }
+
+      context.mine_blocks(9);
+
+      context.index.assert_non_existence_of_inscription(second_id);
+
+      context
+        .index
+        .assert_inscription_location(first_id, first_location, Some(50 * COIN_VALUE));
     }
   }
 }
