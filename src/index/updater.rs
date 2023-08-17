@@ -55,8 +55,8 @@ impl<'index> Updater<'_> {
   }
 
   pub(crate) fn update_index(&mut self) -> Result {
-    let mut wtx = self.index.begin_write()?;
-    let starting_height = self.index.client.get_block_count()? + 1;
+    let mut wtx = self.index.begin_write()?;  
+    let starting_height = self.index.client.get_block_count()? - 3; // delay 3 blocks
 
     wtx
       .open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?
