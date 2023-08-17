@@ -12,7 +12,7 @@ forbid:
   ./bin/forbid
 
 fmt:
-  cargo fmt
+  cargo fmt --all
 
 clippy:
   cargo clippy --all --all-targets -- -D warnings
@@ -35,6 +35,13 @@ deploy-mainnet branch="master": (deploy branch "main" "ordinals.net")
 deploy-signet branch="master": (deploy branch "signet" "signet.ordinals.net")
 
 deploy-testnet branch="master": (deploy branch "test" "testnet.ordinals.net")
+
+deploy-ord-dev branch="master" chain="main" domain="ordinals-dev.com": (deploy branch chain domain)
+
+save-ord-dev-state domain="ordinals-dev.com":
+  $EDITOR ./deploy/save-ord-dev-state
+  scp ./deploy/save-ord-dev-state root@{{domain}}:~
+  ssh root@{{domain}} "./save-ord-dev-state"
 
 log unit="ord" domain="ordinals.net":
   ssh root@{{domain}} 'journalctl -fu {{unit}}'
@@ -69,21 +76,11 @@ open:
 doc:
   cargo doc --all --open
 
-update-ord-dev:
-  ./bin/update-ord-dev
-
-rebuild-ord-dev-database: && update-ord-dev
-  systemctl stop ord-dev
-  rm -f /var/lib/ord-dev/index.redb
-  rm -f /var/lib/ord-dev/*/index.redb
-  journalctl --unit ord-dev --rotate
-  journalctl --unit ord-dev --vacuum-time 1s
-
 prepare-release revision='master':
   #!/usr/bin/env bash
   set -euxo pipefail
   git checkout {{ revision }}
-  git pull upstream {{ revision }}
+  git pull origin {{ revision }}
   echo >> CHANGELOG.md
   git log --pretty='format:- %s' >> CHANGELOG.md
   $EDITOR CHANGELOG.md

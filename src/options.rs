@@ -30,6 +30,11 @@ pub(crate) struct Options {
   pub(crate) data_dir: Option<PathBuf>,
   #[clap(
     long,
+    help = "Set index cache to <DB_CACHE_SIZE> bytes. By default takes 1/4 of available RAM."
+  )]
+  pub(crate) db_cache_size: Option<usize>,
+  #[clap(
+    long,
     help = "Don't look for inscriptions below <FIRST_INSCRIPTION_HEIGHT>."
   )]
   pub(crate) first_inscription_height: Option<u64>,
@@ -49,6 +54,8 @@ pub(crate) struct Options {
   pub(crate) testnet: bool,
   #[clap(long, default_value = "ord", help = "Use wallet named <WALLET>.")]
   pub(crate) wallet: String,
+  #[clap(long, short, help = "Enable JSON API.")]
+  pub(crate) enable_json_api: bool,
 }
 
 impl Options {
@@ -77,13 +84,15 @@ impl Options {
   }
 
   pub(crate) fn rpc_url(&self) -> String {
-    self.rpc_url.clone().unwrap_or_else(|| {
+    if let Some(rpc_url) = &self.rpc_url {
+      format!("{rpc_url}/wallet/{}", self.wallet)
+    } else {
       format!(
         "127.0.0.1:{}/wallet/{}",
         self.chain().default_rpc_port(),
         self.wallet
       )
-    })
+    }
   }
 
   pub(crate) fn cookie_file(&self) -> Result<PathBuf> {
@@ -280,7 +289,7 @@ mod tests {
       .unwrap()
       .options
       .rpc_url(),
-      "127.0.0.1:1234"
+      "127.0.0.1:1234/wallet/ord"
     );
   }
 
@@ -765,5 +774,12 @@ mod tests {
       options.auth().unwrap(),
       Auth::CookieFile("/var/lib/Bitcoin/.cookie".into())
     );
+  }
+
+  #[test]
+  fn setting_db_cache_size() {
+    let arguments =
+      Arguments::try_parse_from(["ord", "--db-cache-size", "16000000000", "index", "run"]).unwrap();
+    assert_eq!(arguments.options.db_cache_size, Some(16000000000));
   }
 }

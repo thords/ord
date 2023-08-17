@@ -7,13 +7,14 @@ use {
   super::*,
   crate::page_config::PageConfig,
   crate::templates::{
-    BlockHtml, ClockSvg, HomeHtml, InputHtml, InscriptionHtml, InscriptionsHtml, OutputHtml,
-    PageContent, PageHtml, PreviewAudioHtml, PreviewImageHtml, PreviewPdfHtml, PreviewTextHtml,
-    PreviewUnknownHtml, PreviewVideoHtml, RangeHtml, RareTxt, SatHtml, TransactionHtml,
+    BlockHtml, ClockSvg, HomeHtml, InputHtml, InscriptionHtml, InscriptionJson, InscriptionsHtml,
+    InscriptionsJson, OutputHtml, OutputJson, PageContent, PageHtml, PreviewAudioHtml,
+    PreviewImageHtml, PreviewPdfHtml, PreviewTextHtml, PreviewUnknownHtml, PreviewVideoHtml,
+    RangeHtml, RareTxt, SatHtml, SatJson, TransactionHtml,
   },
   axum::{
     body,
-    extract::{Extension, Path, Query},
+    extract::{Extension, Json, Path, Query},
     headers::UserAgent,
     http::{header, HeaderMap, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Redirect, Response},
@@ -28,7 +29,7 @@ use {
     caches::DirCache,
     AcmeConfig,
   },
-  std::{cmp::Ordering, str},
+  std::{cmp::Ordering, str, sync::Arc},
   tokio_stream::StreamExt,
   tower_http::{
     compression::CompressionLayer,
@@ -39,6 +40,11 @@ use {
 
 mod accept_json;
 mod error;
+
+#[derive(Clone)]
+pub struct ServerConfig {
+  pub is_json_api_enabled: bool,
+}
 
 enum BlockQuery {
   Height(u64),
@@ -128,13 +134,17 @@ pub(crate) struct Server {
 impl Server {
   pub(crate) fn run(self, options: Options, index: Arc<Index>, handle: Handle) -> Result {
     Runtime::new()?.block_on(async {
-      let clone = index.clone();
-      thread::spawn(move || loop {
-        if let Err(error) = clone.update() {
+      let index_clone = index.clone();
+      let index_thread = thread::spawn(move || loop {
+        if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+          break;
+        }
+        if let Err(error) = index_clone.update() {
           log::warn!("{error}");
         }
         thread::sleep(Duration::from_millis(5000));
       });
+      INDEXER.lock().unwrap().replace(index_thread);
 
       let config = options.load_config()?;
       let acme_domains = self.acme_domains()?;
@@ -142,6 +152,10 @@ impl Server {
       let page_config = Arc::new(PageConfig {
         chain: options.chain(),
         domain: acme_domains.first().cloned(),
+      });
+
+      let server_config = Arc::new(ServerConfig {
+        is_json_api_enabled: index.is_json_api_enabled(),
       });
 
       let router = Router::new()
@@ -176,7 +190,9 @@ impl Server {
         )
         .route("/number/:number", get(Self::number))
         .route("/inscriptions", get(Self::inscriptions))
+        .route("/inscriptions/block/:n", get(Self::inscriptions_in_block))
         .route("/inscriptions/:from", get(Self::inscriptions_from))
+        .route("/inscriptions/:from/:n", get(Self::inscriptions_from_n))
         .route("/install.sh", get(Self::install_script))
         .route("/ordinal/:sat", get(Self::ordinal))
         .route("/output/:output", get(Self::output))
@@ -205,7 +221,8 @@ impl Server {
             .allow_methods([http::Method::GET])
             .allow_origin(Any),
         )
-        .layer(CompressionLayer::new());
+        .layer(CompressionLayer::new())
+        .with_state(server_config);
 
       match (self.http_port(), self.https_port()) {
         (Some(http_port), None) => {
@@ -318,7 +335,9 @@ impl Server {
     if !self.acme_domain.is_empty() {
       Ok(self.acme_domain.clone())
     } else {
-      Ok(vec![sys_info::hostname()?])
+      Ok(vec![System::new()
+        .host_name()
+        .ok_or(anyhow!("no hostname found"))?])
     }
   }
 
@@ -400,18 +419,46 @@ impl Server {
     Extension(page_config): Extension<Arc<PageConfig>>,
     Extension(index): Extension<Arc<Index>>,
     Path(DeserializeFromStr(sat)): Path<DeserializeFromStr<Sat>>,
-  ) -> ServerResult<PageHtml<SatHtml>> {
-    let satpoint = index.rare_sat_satpoint(sat)?;
-
-    Ok(
+    accept_json: AcceptJson,
+  ) -> ServerResult<Response> {
+    let inscriptions = index.get_inscription_ids_by_sat(sat)?;
+    let satpoint = index.rare_sat_satpoint(sat)?.or_else(|| {
+      inscriptions.first().and_then(|&first_inscription_id| {
+        index
+          .get_inscription_satpoint_by_id(first_inscription_id)
+          .ok()
+          .flatten()
+      })
+    });
+    let blocktime = index.block_time(sat.height())?;
+    Ok(if accept_json.0 {
+      Json(SatJson {
+        number: sat.0,
+        decimal: sat.decimal().to_string(),
+        degree: sat.degree().to_string(),
+        name: sat.name(),
+        block: sat.height().0,
+        cycle: sat.cycle(),
+        epoch: sat.epoch().0,
+        period: sat.period(),
+        offset: sat.third(),
+        rarity: sat.rarity(),
+        percentile: sat.percentile(),
+        satpoint,
+        timestamp: blocktime.timestamp().timestamp(),
+        inscriptions,
+      })
+      .into_response()
+    } else {
       SatHtml {
         sat,
         satpoint,
-        blocktime: index.block_time(sat.height())?,
-        inscription: index.get_inscription_id_by_sat(sat)?,
+        blocktime,
+        inscriptions,
       }
-      .page(page_config, index.has_sat_index()?),
-    )
+      .page(page_config, index.has_sat_index()?)
+      .into_response()
+    })
   }
 
   async fn ordinal(Path(sat): Path<String>) -> Redirect {
@@ -441,7 +488,7 @@ impl Server {
 
       TxOut {
         value,
-        script_pubkey: Script::new(),
+        script_pubkey: ScriptBuf::new(),
       }
     } else {
       index
@@ -452,48 +499,29 @@ impl Server {
         .nth(outpoint.vout as usize)
         .ok_or_not_found(|| format!("output {outpoint}"))?
     };
-    if accept_json.0 {
-      let address = match page_config.chain.address_from_script(&output.script_pubkey) {
-        Ok(v) => Some(v),
-        Err(_e) => None,
-      };
-      Ok(
-        axum::Json(serde_json::json!({
-          // "outpoint":outpoint,
-          // "inscriptions":inscriptions,
-          // "list":list,
-          "chain": page_config.chain,
-          "output":output,
-          "address": address
-        }))
-        .into_response(),
-      )
-    } else {
-      let inscriptions = index.get_inscriptions_on_output(outpoint)?;
-      Ok(
-        OutputHtml {
-          outpoint,
-          inscriptions,
-          list,
-          chain: page_config.chain,
-          output,
-        }
-        .page(page_config, index.has_sat_index()?)
-        .into_response(),
-      )
-    }
-    // let inscriptions = index.get_inscriptions_on_output(outpoint)?;
 
-    // Ok(
-    //   OutputHtml {
-    //     outpoint,
-    //     inscriptions,
-    //     list,
-    //     chain: page_config.chain,
-    //     output,
-    //   }
-    //   .page(page_config, index.has_sat_index()?),
-    // )
+    let inscriptions = index.get_inscriptions_on_output(outpoint)?;
+
+    Ok(if accept_json.0 {
+      Json(OutputJson::new(
+        outpoint,
+        list,
+        page_config.chain,
+        output,
+        inscriptions,
+      ))
+      .into_response()
+    } else {
+      OutputHtml {
+        outpoint,
+        inscriptions,
+        list,
+        chain: page_config.chain,
+        output,
+      }
+      .page(page_config, index.has_sat_index()?)
+      .into_response()
+    })
   }
 
   async fn number(
@@ -633,10 +661,10 @@ impl Server {
   }
 
   async fn status(Extension(index): Extension<Arc<Index>>) -> (StatusCode, &'static str) {
-    if index.is_reorged() {
+    if index.is_unrecoverably_reorged() {
       (
         StatusCode::OK,
-        "reorg detected, please rebuild the database.",
+        "unrecoverable reorg detected, please rebuild the database.",
       )
     } else {
       (
@@ -879,9 +907,8 @@ impl Server {
       header::CONTENT_TYPE,
       inscription
         .content_type()
-        .unwrap_or("application/octet-stream")
-        .parse()
-        .unwrap(),
+        .and_then(|content_type| content_type.parse().ok())
+        .unwrap_or(HeaderValue::from_static("application/octet-stream")),
     );
     headers.insert(
       header::CONTENT_SECURITY_POLICY,
@@ -891,12 +918,18 @@ impl Server {
       header::CONTENT_SECURITY_POLICY,
       HeaderValue::from_static("default-src *:*/content/ *:*/blockheight *:*/blockhash *:*/blockhash/ *:*/blocktime 'unsafe-eval' 'unsafe-inline' data: blob:"),
     );
+
+    let body = inscription.into_body();
+    let cache_control = match body {
+      Some(_) => "max-age=31536000, immutable",
+      None => "max-age=600",
+    };
     headers.insert(
       header::CACHE_CONTROL,
-      HeaderValue::from_static("max-age=31536000, immutable"),
+      HeaderValue::from_str(cache_control).unwrap(),
     );
 
-    Some((headers, inscription.into_body()?))
+    Some((headers, body?))
   }
 
   async fn preview(
@@ -954,6 +987,91 @@ impl Server {
       Media::Unknown => Ok(PreviewUnknownHtml.into_response()),
       Media::Video => Ok(PreviewVideoHtml { inscription_id }.into_response()),
     }
+  }
+
+  async fn inscription2num(
+    // Extension(page_config): Extension<Arc<PageConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(inscription_id): Path<InscriptionId>,
+    // accept_json: AcceptJson,
+  ) -> ServerResult<Response> {
+    let entry = index
+      .get_inscription_entry(inscription_id)?
+      .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
+
+    Ok(axum::Json(serde_json::json!({ "number": entry.number })).into_response())
+  }
+  
+  async fn inscription(
+    Extension(page_config): Extension<Arc<PageConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(inscription_id): Path<InscriptionId>,
+    accept_json: AcceptJson,
+  ) -> ServerResult<Response> {
+    let entry = index
+      .get_inscription_entry(inscription_id)?
+      .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
+
+    let inscription = index
+      .get_inscription_by_id(inscription_id)?
+      .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
+
+    let satpoint = index
+      .get_inscription_satpoint_by_id(inscription_id)?
+      .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
+
+    let output = if satpoint.outpoint == unbound_outpoint() {
+      None
+    } else {
+      Some(
+        index
+          .get_transaction(satpoint.outpoint.txid)?
+          .ok_or_not_found(|| format!("inscription {inscription_id} current transaction"))?
+          .output
+          .into_iter()
+          .nth(satpoint.outpoint.vout.try_into().unwrap())
+          .ok_or_not_found(|| format!("inscription {inscription_id} current transaction output"))?,
+      )
+    };
+
+    let previous = index.get_inscription_id_by_inscription_number(entry.number - 1)?;
+
+    let next = index.get_inscription_id_by_inscription_number(entry.number + 1)?;
+
+    Ok(if accept_json.0 {
+      Json(InscriptionJson::new(
+        page_config.chain,
+        entry.fee,
+        entry.height,
+        inscription,
+        inscription_id,
+        next,
+        entry.number,
+        output,
+        previous,
+        entry.sat,
+        satpoint,
+        timestamp(entry.timestamp),
+      ))
+      .into_response()
+    } else {
+      InscriptionHtml {
+        chain: page_config.chain,
+        genesis_fee: entry.fee,
+        genesis_height: entry.height,
+        inscription,
+        inscription_id,
+        next,
+        number: entry.number,
+        output,
+        previous,
+        sat: entry.sat,
+        satpoint,
+        timestamp: timestamp(entry.timestamp),
+      }
+      .page(page_config, index.has_sat_index()?)
+      .into_response()
+    })
   }
 
   async fn inscriptionmini(
@@ -1025,108 +1143,79 @@ impl Server {
     )
   }
 
-  async fn inscription2num(
-    // Extension(page_config): Extension<Arc<PageConfig>>,
-    Extension(index): Extension<Arc<Index>>,
-    Path(inscription_id): Path<InscriptionId>,
-    // accept_json: AcceptJson,
-  ) -> ServerResult<Response> {
-    let entry = index
-      .get_inscription_entry(inscription_id)?
-      .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
-
-    Ok(axum::Json(serde_json::json!({ "number": entry.number })).into_response())
-  }
-
-  async fn inscription(
+  async fn inscriptions(
     Extension(page_config): Extension<Arc<PageConfig>>,
     Extension(index): Extension<Arc<Index>>,
-    Path(inscription_id): Path<InscriptionId>,
     accept_json: AcceptJson,
   ) -> ServerResult<Response> {
-    let entry = index
-      .get_inscription_entry(inscription_id)?
-      .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
+    Self::inscriptions_inner(page_config, index, None, 100, accept_json).await
+  }
 
-    let inscription = index
-      .get_inscription_by_id(inscription_id)?
-      .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
-
-    let satpoint = index
-      .get_inscription_satpoint_by_id(inscription_id)?
-      .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
-
-    let output = index
-      .get_transaction(satpoint.outpoint.txid)?
-      .ok_or_not_found(|| format!("inscription {inscription_id} current transaction"))?
-      .output
-      .into_iter()
-      .nth(satpoint.outpoint.vout.try_into().unwrap())
-      .ok_or_not_found(|| format!("inscription {inscription_id} current transaction output"))?;
-
-    let previous = if let Some(previous) = entry.number.checked_sub(1) {
-      Some(
-        index
-          .get_inscription_id_by_inscription_number(previous)?
-          .ok_or_not_found(|| format!("inscription {previous}"))?,
-      )
-    } else {
-      None
-    };
-
-    let next = index.get_inscription_id_by_inscription_number(entry.number + 1)?;
-
+  async fn inscriptions_in_block(
+    Extension(page_config): Extension<Arc<PageConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(block_height): Path<u64>,
+    accept_json: AcceptJson,
+  ) -> ServerResult<Response> {
+    let inscriptions = index.get_inscriptions_in_block(block_height)?;
     Ok(if accept_json.0 {
-      axum::Json(serde_json::json!({ "inscription_id": inscription_id })).into_response()
+      Json(InscriptionsJson::new(inscriptions, None, None, None, None)).into_response()
     } else {
-      InscriptionHtml {
-        chain: page_config.chain,
-        genesis_fee: entry.fee,
-        genesis_height: entry.height,
-        inscription,
-        inscription_id,
-        next,
-        number: entry.number,
-        output: Some(output),
-        previous,
-        sat: entry.sat,
-        satpoint,
-        timestamp: timestamp(entry.timestamp),
+      InscriptionsHtml {
+        inscriptions,
+        prev: None,
+        next: None,
       }
       .page(page_config, index.has_sat_index()?)
       .into_response()
     })
   }
 
-  async fn inscriptions(
-    Extension(page_config): Extension<Arc<PageConfig>>,
-    Extension(index): Extension<Arc<Index>>,
-  ) -> ServerResult<PageHtml<InscriptionsHtml>> {
-    Self::inscriptions_inner(page_config, index, None).await
-  }
-
   async fn inscriptions_from(
     Extension(page_config): Extension<Arc<PageConfig>>,
     Extension(index): Extension<Arc<Index>>,
     Path(from): Path<i64>,
-  ) -> ServerResult<PageHtml<InscriptionsHtml>> {
-    Self::inscriptions_inner(page_config, index, Some(from)).await
+    accept_json: AcceptJson,
+  ) -> ServerResult<Response> {
+    Self::inscriptions_inner(page_config, index, Some(from), 100, accept_json).await
+  }
+
+  async fn inscriptions_from_n(
+    Extension(page_config): Extension<Arc<PageConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path((from, n)): Path<(i64, usize)>,
+    accept_json: AcceptJson,
+  ) -> ServerResult<Response> {
+    Self::inscriptions_inner(page_config, index, Some(from), n, accept_json).await
   }
 
   async fn inscriptions_inner(
     page_config: Arc<PageConfig>,
     index: Arc<Index>,
     from: Option<i64>,
-  ) -> ServerResult<PageHtml<InscriptionsHtml>> {
-    let (inscriptions, prev, next) = index.get_latest_inscriptions_with_prev_and_next(100, from)?;
-    Ok(
+    n: usize,
+    accept_json: AcceptJson,
+  ) -> ServerResult<Response> {
+    let (inscriptions, prev, next, lowest, highest) =
+      index.get_latest_inscriptions_with_prev_and_next(n, from)?;
+    Ok(if accept_json.0 {
+      Json(InscriptionsJson::new(
+        inscriptions,
+        prev,
+        next,
+        Some(lowest),
+        Some(highest),
+      ))
+      .into_response()
+    } else {
       InscriptionsHtml {
         inscriptions,
         next,
         prev,
       }
-      .page(page_config, index.has_sat_index()?),
-    )
+      .page(page_config, index.has_sat_index()?)
+      .into_response()
+    })
   }
 
   async fn redirect_http_to_https(
@@ -1170,7 +1259,7 @@ mod tests {
     fn new_with_regtest() -> Self {
       Self::new_server(
         test_bitcoincore_rpc::builder()
-          .network(bitcoin::Network::Regtest)
+          .network(bitcoin::network::constants::Network::Regtest)
           .build(),
         None,
         &["--chain", "regtest"],
@@ -1517,7 +1606,7 @@ mod tests {
     let (_, server) = parse_server_args("ord server");
     assert_eq!(
       server.acme_domains().unwrap(),
-      &[sys_info::hostname().unwrap()]
+      &[System::new().host_name().unwrap()]
     );
   }
 
@@ -1609,14 +1698,16 @@ mod tests {
   fn http_to_https_redirect_with_path() {
     TestServer::new_with_args(&[], &["--redirect-http-to-https", "--https"]).assert_redirect(
       "/sat/0",
-      &format!("https://{}/sat/0", sys_info::hostname().unwrap()),
+      &format!("https://{}/sat/0", System::new().host_name().unwrap()),
     );
   }
 
   #[test]
   fn http_to_https_redirect_with_empty() {
-    TestServer::new_with_args(&[], &["--redirect-http-to-https", "--https"])
-      .assert_redirect("/", &format!("https://{}/", sys_info::hostname().unwrap()));
+    TestServer::new_with_args(&[], &["--redirect-http-to-https", "--https"]).assert_redirect(
+      "/",
+      &format!("https://{}/", System::new().host_name().unwrap()),
+    );
   }
 
   #[test]
@@ -2088,17 +2179,20 @@ mod tests {
   }
 
   #[test]
-  fn detect_reorg() {
+  fn detect_unrecoverable_reorg() {
     let test_server = TestServer::new();
 
-    test_server.mine_blocks(1);
+    test_server.mine_blocks(21);
 
     test_server.assert_response("/status", StatusCode::OK, "OK");
 
-    test_server.bitcoin_rpc_server.invalidate_tip();
-    test_server.bitcoin_rpc_server.mine_blocks(2);
+    for _ in 0..15 {
+      test_server.bitcoin_rpc_server.invalidate_tip();
+    }
 
-    test_server.assert_response_regex("/status", StatusCode::OK, "reorg detected.*");
+    test_server.bitcoin_rpc_server.mine_blocks(21);
+
+    test_server.assert_response_regex("/status", StatusCode::OK, "unrecoverable reorg detected.*");
   }
 
   #[test]
@@ -2175,7 +2269,8 @@ mod tests {
   fn commits_are_tracked() {
     let server = TestServer::new();
 
-    assert_eq!(server.index.statistic(crate::index::Statistic::Commits), 1);
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(server.index.statistic(crate::index::Statistic::Commits), 3);
 
     let info = server.index.info().unwrap();
     assert_eq!(info.transactions.len(), 1);
@@ -2183,7 +2278,7 @@ mod tests {
 
     server.index.update().unwrap();
 
-    assert_eq!(server.index.statistic(crate::index::Statistic::Commits), 1);
+    assert_eq!(server.index.statistic(crate::index::Statistic::Commits), 3);
 
     let info = server.index.info().unwrap();
     assert_eq!(info.transactions.len(), 1);
@@ -2194,7 +2289,7 @@ mod tests {
     thread::sleep(Duration::from_millis(10));
     server.index.update().unwrap();
 
-    assert_eq!(server.index.statistic(crate::index::Statistic::Commits), 2);
+    assert_eq!(server.index.statistic(crate::index::Statistic::Commits), 6);
 
     let info = server.index.info().unwrap();
     assert_eq!(info.transactions.len(), 2);
@@ -2336,6 +2431,18 @@ mod tests {
   fn content_response_no_content_type() {
     let (headers, body) =
       Server::content_response(Inscription::new(None, Some(Vec::new()))).unwrap();
+
+    assert_eq!(headers["content-type"], "application/octet-stream");
+    assert!(body.is_empty());
+  }
+
+  #[test]
+  fn content_response_bad_content_type() {
+    let (headers, body) = Server::content_response(Inscription::new(
+      Some("\n".as_bytes().to_vec()),
+      Some(Vec::new()),
+    ))
+    .unwrap();
 
     assert_eq!(headers["content-type"], "application/octet-stream");
     assert!(body.is_empty());
