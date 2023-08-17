@@ -94,6 +94,7 @@ impl<'index> Updater<'_> {
       .range(0..)?
       .rev()
       .next()
+      .and_then(|result| result.ok())
       .map(|(height, _)| height.value() + 1) //must add 1 
       .unwrap_or(0);
 
