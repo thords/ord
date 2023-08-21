@@ -184,7 +184,7 @@ impl<'index> Updater<'_> {
 
     thread::spawn(move || loop {
       if let Some(height_limit) = height_limit {
-        if height >= (height_limit - 3) {
+        if height > (height_limit - 3) {
           break;
         }
       }
