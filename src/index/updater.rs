@@ -44,7 +44,7 @@ impl<'index> Updater<'_> {
   pub(crate) fn new(index: &'index Index) -> Result<Updater<'index>> {
     Ok(Updater {
       range_cache: HashMap::new(),
-      height: index.block_count()?,
+      height: index.block_count()? ,
       index,
       index_sats: index.has_sat_index()?,
       sat_ranges_since_flush: 0,
@@ -56,7 +56,11 @@ impl<'index> Updater<'_> {
 
   pub(crate) fn update_index(&mut self) -> Result {
     let mut wtx = self.index.begin_write()?;  
-    let starting_height = self.index.client.get_block_count()? - 3; // delay 3 blocks
+    let starting_height = self.index.client.get_block_count()?; 
+
+    if ( starting_height - 3 ) <= self.height {
+      return Ok(());
+    }
 
     wtx
       .open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?
@@ -124,7 +128,7 @@ impl<'index> Updater<'_> {
 
       uncommitted += 1;
 
-      if uncommitted == 5000 {
+      if uncommitted == 1000 {  // submit with 1000 blocks
         self.commit(wtx, value_cache)?;
         value_cache = HashMap::new();
         uncommitted = 0;
