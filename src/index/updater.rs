@@ -58,10 +58,6 @@ impl<'index> Updater<'_> {
     let mut wtx = self.index.begin_write()?;  
     let starting_height = self.index.client.get_block_count()?; 
 
-    if ( starting_height - 3 ) <= self.height {
-      return Ok(());
-    }
-
     wtx
       .open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?
       .insert(
@@ -179,7 +175,8 @@ impl<'index> Updater<'_> {
   ) -> Result<mpsc::Receiver<BlockData>> {
     let (tx, rx) = mpsc::sync_channel(32);
 
-    let height_limit = index.height_limit;
+    // let height_limit = index.height_limit;
+    let height_limit = Some(index.client.get_block_count()?);
 
     let client = index.options.bitcoin_rpc_client()?;
 
@@ -187,7 +184,7 @@ impl<'index> Updater<'_> {
 
     thread::spawn(move || loop {
       if let Some(height_limit) = height_limit {
-        if height >= height_limit {
+        if height >= (height_limit - 3) {
           break;
         }
       }
